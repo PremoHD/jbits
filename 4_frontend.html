@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>JBits Agent Smith Uniswap Live</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    button { margin: 5px; padding: 10px 20px; }
+    pre { background: #f0f0f0; padding: 10px; max-height: 500px; overflow-y: scroll; }
+  </style>
+</head>
+<body>
+  <h1>JBits Agent Smith Live Trading</h1>
+  <button id="connect">Connect Wallet</button>
+  <button id="run">Run Agent</button>
+  <pre id="log"></pre>
+
+  <script src="https://cdn.jsdelivr.net/npm/ethers/dist/ethers.min.js"></script>
+  <script>
+    /*************************************
+     CONFIG
+    **************************************/
+    const CONFIG = {
+      MODE: "PAPER", // PAPER | LIVE
+      PAIR: "ETH/USDC",
+      MAX_TRADE_USD: 200,
+      MAX_TRADES_PER_DAY: 5,
+      EMA_FAST: 9,
+      EMA_SLOW: 21,
+      EMA_TREND: 200,
+      RSI_PERIOD: 14,
+      SLIPPAGE: 0.005,
+      UNISWAP_ROUTER: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      UNISWAP_POOL: "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+      POLL_INTERVAL_MS: 5000
+    };
+
+    let state = { balance: 10000, tradesToday: 0, pnl:0, losses:0 };
+    let account, provider, signer;
+    const logEl = document.getElementById("log");
+    function log(msg){ logEl.textContent += msg+"\n"; console.log(msg); }
+
+    /*************************************
+     CONNECT WALLET
+    **************************************/
+    document.getElementById("connect").onclick = async () => {
+      if(!window.ethereum){ alert("MetaMask not detected"); return; }
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      provider = new ethers.providers.Web3Provider(window.ethereum);
+      signer = provider.getSigner();
+      account = await signer.getAddress();
+      log("✅ Connected: " + account);
+    };
+
+    /*************************************
+     INDICATORS
+    **************************************/
+    function EMA(period, data){ const k=2/(period+1); let ema=data[0]; for(let i=1;i<data.length;i++){ ema=data[i]*k + ema*(1-k); } return ema; }
+    function RSI(period,data){ let g=0,l=0; for(let i=data.length-period;i<data.length-1;i++){ const d=data[i+1]-data[i]; d>=0?g+=d:l-=d; } return 100 - 100/(1+g/(l||1)); }
+
+    /*************************************
+     MARKET DATA
+    **************************************/
+    async function fetchMarket(){
+      const query=`{ pool(id:"${CONFIG.UNISWAP_POOL.toLowerCase()}"){ token0Price token1Price } }`;
+      const res = await fetch("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({query})
+      });
+      const json = await res.json();
+      const price = Number(json.data.pool.token0Price);
+      const candles = Array(200).fill(price); // simple array for EMA/RSI
+      return {price,candles};
+    }
+
+    /*************************************
+     ANALYSIS
+    **************************************/
+    function analyze(market){
+      const closes = market.candles;
+      const emaFast = EMA(CONFIG.EMA_FAST, closes);
+      const emaSlow = EMA(CONFIG.EMA_SLOW, closes);
+      const emaTrend = EMA(CONFIG.EMA_TREND, closes);
+      const rsi = RSI(CONFIG.RSI_PERIOD, closes);
+      let trend="SIDEWAYS"; if(emaSlow>emaTrend) trend="BULLISH"; if(emaSlow<emaTrend) trend="BEARISH";
+      return {emaFast, emaSlow, emaTrend, rsi, trend};
+    }
+
+    /*************************************
+     DECISION
+    **************************************/
+    function decide(signal){
+      if(state.tradesToday>=CONFIG.MAX_TRADES_PER_DAY) return null;
+      if(signal.trend==="BULLISH" && signal.emaFast>signal.emaSlow && signal.rsi<70) return "BUY";
+      if(signal.trend==="BEARISH" && signal.rsi>30) return "SELL";
+      return null;
+    }
+
+    /*************************************
+     TRADE INTENT
+    **************************************/
+    function buildIntent(side, price){
+      return { pair:CONFIG.PAIR, side, amountUSD:CONFIG.MAX_TRADE_USD, price, slippage:CONFIG.SLIPPAGE, timestamp:Date.now() };
+    }
+
+    /*************************************
+     EXECUTION (JBits-enabled)
+    **************************************/
+    async function execute(intent, upgrades=["mirror","invert","mobius","multi-network"]){
+      if(CONFIG.MODE==="PAPER"){
+        state.tradesToday++;
+        const win = Math.random()>0.45;
+        const pnl = win?intent.amountUSD*0.02:-intent.amountUSD*0.01;
+        state.balance+=pnl; state.pnl+=pnl; if(!win) state.losses++;
+        log(`🧪 PAPER ${intent.side} | PnL:${pnl.toFixed(2)} | Balance:${state.balance.toFixed(2)}`);
+
+        // Log to FastAPI multi-ledger
+        fetch('/log_agent_trade',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ agent_id: account||"PAPER_AGENT", intent, upgrades })
+        });
+      } else if(CONFIG.MODE==="LIVE"){
+        if(!signer){ log("❌ Connect MetaMask first"); return; }
+        const abi = ["function exactInputSingle(tuple(address,address,uint24,address,uint256,uint256,uint160) params) payable returns (uint256)"];
+        const router = new ethers.Contract(CONFIG.UNISWAP_ROUTER, abi, signer);
+        const params = {
+          tokenIn:"0xC02aaA39b223FE8D0A0E5C4F27eAD9083C756Cc2",
+          tokenOut:"0xA0b86991c6218b36c1d19D4a2e9eb0ce3606eb48",
+          fee:3000, recipient:account,
+          amountIn:ethers.utils.parseEther((intent.amountUSD/intent.price).toFixed(18)),
+          amountOutMinimum:0, sqrtPriceLimitX96:0
+        };
+        const tx = await router.exactInputSingle(params,{value: params.amountIn});
+        log(`🟢 LIVE ${intent.side} tx sent: ${tx.hash}`);
+
+        // Log live trade to multi-ledger
+        fetch('/log_agent_trade',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ agent_id: account, intent, upgrades })
+        });
+      }
+    }
+
+    /*************************************
+     MAIN LOOP
+    **************************************/
+    document.getElementById("run").onclick = async () => {
+      log("🤖 JBits Agent running...");
+      setInterval(async ()=>{
+        const market = await fetchMarket();
+        const signal = analyze(market);
+        const action = decide(signal);
+        log(`Price: ${market.price.toFixed(2)} | Trend: ${signal.trend} | RSI: ${signal.rsi.toFixed(2)} | Decision: ${action||"NONE"}`);
+        if(action){
+          const intent = buildIntent(action, market.price);
+          await execute(intent); // auto upgrades applied inside execute
+        }
+      }, CONFIG.POLL_INTERVAL_MS);
+    };
+  </script>
+</body>
+</html>
