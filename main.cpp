@@ -14,3 +14,5 @@ jbits/
 ├── JBits.dat       ← PRIVATE KEY (wallet)
 ├── jbits_log.csv   ← spreadsheet log (everything)
 └── README.md
+std::ofstream("JBits.dat");
+std::ofstream("jbits_log.csv");
