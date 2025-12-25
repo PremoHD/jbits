@@ -1,0 +1,7 @@
+networkx
+matplotlib
+pygraphviz
+numpy
+pandas
+requests
+flask       # for safe endpoints
