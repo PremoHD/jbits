@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y git curl graphviz && rm -rf /var/lib/apt/lists/*
+
+# Create working dir
+WORKDIR /app
+
+# Copy repo files
+COPY . /app
+
+# Install Python requirements
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+# Expose port for optional local dashboard
+EXPOSE 8080
+
+# Default run
+CMD ["python", "main.py"]
