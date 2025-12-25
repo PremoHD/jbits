@@ -9,3 +9,8 @@ if (in.good()) {
     out << private_key << "\n";
     out.close();
 }
+jbits/
+├── jbits           ← compiled binary
+├── JBits.dat       ← PRIVATE KEY (wallet)
+├── jbits_log.csv   ← spreadsheet log (everything)
+└── README.md
