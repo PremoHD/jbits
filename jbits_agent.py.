@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 """
-Ultimate JBits Agent v5.0 - Single Copy-Paste Version
-- Autonomous JBits network
-- NFT minting & blockchain/testnet publishing
-- ETH payment detection & auto-claiming
-- Full ledger: main, parallel, billing
-- Layer hashes, negative/inverted branches
-- API tracking & parsing
+JBits Agent v5.1 - Multi-Network
+- Ethereum (EVM), Solana (mock/test), PrivateChain
+- Standalone: no Flask
+- NFT minting, ledger updates, super-composite folding
+- Payment watcher on Ethereum (Solana & PrivateChain mocked)
 """
 
 import hashlib, json, os, random, datetime, threading, time
-from flask import Flask, request, jsonify
 from web3 import Web3
 
 # -----------------------------
@@ -26,12 +23,9 @@ INFURA_GOERLI_URL=os.environ.get("INFURA_GOERLI_URL")
 WALLET_ADDRESS=os.environ.get("WALLET_ADDRESS")
 WALLET_PRIVATE_KEY=os.environ.get("WALLET_PRIVATE_KEY")
 
-API_KEYS={"free":{"limit":100,"rate_per_min":10},"pro":{"limit":10000,"rate_per_min":120},"enterprise":{"limit":1000000,"rate_per_min":1000}}
-API_KEY_STORE={}
-
-NETWORKS=["Ethereum","Solana","PrivateChain","OffChain"]
+NETWORKS=["Ethereum","Solana","PrivateChain"]
 PLATFORMS=["Linux","Windows","Codespace","CloudVM"]
-PROTOCOLS=["EVM","UTXO","Custom","REST"]
+PROTOCOLS=["EVM","Custom","UTXO"]
 CLIENTS=["ClientA","ClientB","ClientC"]
 
 NFT_ENABLED=True
@@ -42,9 +36,6 @@ w3=Web3(Web3.HTTPProvider(INFURA_GOERLI_URL))
 # -----------------------------
 def compute_hash(data): return hashlib.sha256(data.encode()).hexdigest()
 def timestamp(): return datetime.datetime.utcnow().isoformat()
-def hash_ip(ip): return compute_hash(ip + SECURITY_SALT)
-def hash_api_key(key): return compute_hash(key + SECURITY_SALT)
-def api_key_fingerprint(key): return key[:4]+"****"
 
 def log_parallel(event_type,details):
     path=os.path.join(OUTPUT_DIR,"parallel_ledger.json")
@@ -55,24 +46,20 @@ def log_parallel(event_type,details):
     ledger.append(entry)
     with open(path,"w") as f: json.dump(ledger,f,indent=4)
 
-def track_api_usage(api_key_hash,tier):
-    now=int(time.time())
-    entry=API_KEY_STORE.setdefault(api_key_hash,{"count":0,"window":now,"minute_calls":0})
-    if now-entry["window"]>60: entry["window"]=now; entry["minute_calls"]=0
-    entry["count"]+=1; entry["minute_calls"]+=1
-    limits=API_KEYS[tier]
-    if entry["count"]>limits["limit"] or entry["minute_calls"]>limits["rate_per_min"]: raise Exception("API quota exceeded")
-
 def mint_nft(hash_value,network,owner):
     tx_hash=w3.keccak(text=hash_value+network+owner+timestamp()).hex()[:16]
     log_parallel("NFT_MINTED",{"hash":hash_value,"network":network,"owner":owner,"tx_hash":tx_hash})
     print(f"[NFT] Minted {hash_value[:8]}... on {network} for {owner} | TX_ID: {tx_hash}")
     return tx_hash
 
-def publish_to_chain(hash_value,owner_address):
-    tx_hash=w3.keccak(text=hash_value+owner_address+timestamp()).hex()[:16]
-    log_parallel("BLOCKCHAIN_PUBLISH",{"hash":hash_value,"owner":owner_address,"tx_hash":tx_hash})
-    print(f"[CHAIN] Published {hash_value[:8]}... | TX: {tx_hash}")
+def publish_to_chain(hash_value,owner_address,network="Ethereum"):
+    if network=="Ethereum":
+        tx_hash=w3.keccak(text=hash_value+owner_address+timestamp()).hex()[:16]
+    else:
+        # Mock for Solana & PrivateChain
+        tx_hash=compute_hash(hash_value+network+owner_address+timestamp())[:16]
+    log_parallel("BLOCKCHAIN_PUBLISH",{"hash":hash_value,"owner":owner_address,"tx_hash":tx_hash,"network":network})
+    print(f"[CHAIN-{network}] Published {hash_value[:8]}... | TX: {tx_hash}")
     return tx_hash
 
 # -----------------------------
@@ -104,21 +91,27 @@ class JBitsAgent:
     def add_layer_hash(self,name,data):
         h=compute_hash(data); self.layer_hashes.append({"name":name,"hash":h,"timestamp":timestamp()}); log_parallel("LAYER_HASH_ADDED",{"name":name,"hash":h}); return h
     def create_genesis(self):
-        self.nodes.append(JBitsNode("H1",[],"Ethereum","EVM","Linux",1,{"core":"v1"},nft=True))
-        self.nodes.append(JBitsNode("H1_inv",[],"Ethereum","EVM","Linux",1,{"core":"~v1"},nft=True))
-        self.add_layer_hash("genesis_layer","".join([n.hash for n in self.nodes[:2]]))
+        # Genesis nodes on Ethereum
+        self.nodes.append(JBitsNode("ETH_H1",[],"Ethereum","EVM","Linux",1,{"core":"v1"},nft=True))
+        self.nodes.append(JBitsNode("ETH_H1_inv",[],"Ethereum","EVM","Linux",1,{"core":"~v1"},nft=True))
+        # Mock genesis nodes for Solana & PrivateChain
+        self.nodes.append(JBitsNode("SOL_H1",[],"Solana","Custom","CloudVM",1,{"core":"v1"},nft=True))
+        self.nodes.append(JBitsNode("PC_H1",[],"PrivateChain","UTXO","Windows",1,{"core":"v1"},nft=True))
+        self.add_layer_hash("genesis_layer","".join([n.hash for n in self.nodes]))
     def create_branch(self,name,linked,network,protocol,platform,layer,variables,conditional=False,monetization=False,nft=False):
         b=JBitsNode(name,linked,network,protocol,platform,layer,variables,conditional,monetization,nft)
         self.nodes.append(b); log_parallel("BRANCH_CREATED",b.to_dict()); self.add_layer_hash(f"{name}_layer",b.hash)
-        if b.monetization and b.nft: publish_to_chain(b.hash,random.choice(CLIENTS))
+        if b.monetization and b.nft: publish_to_chain(b.hash,random.choice(CLIENTS),network)
         return b.hash
     def fold_super_composite(self):
         self.super_composite=compute_hash("".join([n.hash for n in self.nodes]))
         log_parallel("SUPER_COMPOSITE_UPDATED",{"super_composite":self.super_composite}); self.add_layer_hash("super_composite_layer",self.super_composite)
-        publish_to_chain(self.super_composite,WALLET_ADDRESS); return self.super_composite
+        # Publish to all networks
+        for network in NETWORKS: publish_to_chain(self.super_composite,WALLET_ADDRESS,network)
+        return self.super_composite
     def parse_and_publish(self):
         for n in self.nodes:
-            if n.monetization and n.nft: log_parallel("PUBLISH_EVENT",{"node":n.name,"hash":n.hash,"tx_id":n.tx_id})
+            if n.monetization and n.nft: log_parallel("PUBLISH_EVENT",{"node":n.name,"hash":n.hash,"tx_id":n.tx_id,"network":n.network})
         log_parallel("PUBLISH_SUPER_COMPOSITE",{"super_composite":self.super_composite})
     def simulate_payments(self):
         p=[]; 
@@ -133,16 +126,17 @@ class JBitsAgent:
         log_parallel("LEDGER_EXPORTED",{"filename":filename}); print(f"[+] Ledger exported: {os.path.join(OUTPUT_DIR,filename)}")
     def run_full_execution(self):
         self.create_genesis()
-        self.create_branch("H2_branch",["H1","H1_inv"],"Solana","Custom","CloudVM",1,{"threshold":0.8},monetization=True,nft=True)
-        self.create_branch("H2_neg_branch",["H1","H1_inv"],"PrivateChain","UTXO","Windows",1,{"threshold":0.3},monetization=True,nft=True)
-        self.create_branch("H2_inverted_branch",["H1","H1_inv"],"OffChain","Custom","Linux",1,{"invert":True},monetization=True,nft=True)
+        # Multi-network branches
+        self.create_branch("ETH_branch1",["ETH_H1","ETH_H1_inv"],"Ethereum","EVM","Linux",1,{"threshold":0.8},monetization=True,nft=True)
+        self.create_branch("SOL_branch1",["SOL_H1"],"Solana","Custom","CloudVM",1,{"threshold":0.7},monetization=True,nft=True)
+        self.create_branch("PC_branch1",["PC_H1"],"PrivateChain","UTXO","Windows",1,{"threshold":0.6},monetization=True,nft=True)
         self.fold_super_composite(); self.parse_and_publish(); self.export_ledger()
-        print("[*] Execution complete. Super-composite:",self.super_composite)
+        print("[*] Multi-network execution complete. Super-composite:",self.super_composite)
 
 # -----------------------------
-# Payment Watcher
+# Payment Watcher (Ethereum Only)
 # -----------------------------
-def watch_payments():
+def watch_payments(agent):
     last_block=w3.eth.block_number
     while True:
         current_block=w3.eth.block_number
@@ -152,38 +146,17 @@ def watch_payments():
                 if tx.to and tx.to.lower()==WALLET_ADDRESS.lower() and tx.value>0:
                     amount_eth=w3.from_wei(tx.value,'ether'); payer=tx['from']
                     for n in agent.nodes:
-                        if n.monetization and not n.claimed_by:
+                        if n.monetization and not n.claimed_by and n.network=="Ethereum":
                             n.claimed_by=payer; n.claimed_amount=float(amount_eth)
                             log_parallel("PAYMENT_RECEIVED",{"node":n.name,"payer":payer,"amount":amount_eth,"tx_hash":tx.hash.hex()})
                             print(f"[PAYMENT] Node {n.name} claimed by {payer} for {amount_eth} ETH")
         last_block=current_block; time.sleep(15)
 
 # -----------------------------
-# Flask API
-# -----------------------------
-app=Flask(__name__); agent=JBitsAgent(); agent.run_full_execution()
-
-@app.route("/ledger",methods=["GET"])
-def get_ledger():
-    ip=request.remote_addr or "0.0.0.0"; api_key=request.headers.get("X-API-KEY",OPENAI_KEY); tier=request.headers.get("X-API-TIER","free")
-    track_api_usage(hash_api_key(api_key),tier); log_parallel("API_CALL",{"endpoint":"/ledger","api_key_fp":api_key_fingerprint(api_key),"hashed_ip":hash_ip(ip),"tier":tier,"timestamp":timestamp()})
-    with open(os.path.join(OUTPUT_DIR,"jbits_full_ledger.json"),"r") as f: data=json.load(f)
-    return jsonify(data)
-
-@app.route("/run_branch",methods=["POST"])
-def run_branch():
-    data=request.json; name=data.get("name",f"branch_{len(agent.nodes)+1}"); linked=data.get("linked",[]); network=data.get("network","Ethereum"); protocol=data.get("protocol","EVM"); platform=data.get("platform","Linux"); layer=data.get("layer",1); variables=data.get("variables",{}); conditional=data.get("conditional",False); monetization=data.get("monetization",False); nft=data.get("nft",False)
-    ip=request.remote_addr or "0.0.0.0"; api_key=request.headers.get("X-API-KEY",OPENAI_KEY); tier=request.headers.get("X-API-TIER","free")
-    track_api_usage(hash_api_key(api_key),tier); log_parallel("API_CALL",{"endpoint":"/run_branch","api_key_fp":api_key_fingerprint(api_key),"hashed_ip":hash_ip(ip),"tier":tier,"timestamp":timestamp()})
-    agent.create_branch(name,linked,network,protocol,platform,layer,variables,conditional,monetization,nft)
-    agent.fold_super_composite(); agent.parse_and_publish(); agent.export_ledger()
-    return jsonify({"status":"branch added","super_composite":agent.super_composite})
-
-def run_api(): app.run(host="0.0.0.0",port=5000)
-
-# -----------------------------
 # START
 # -----------------------------
 if __name__=="__main__":
-    threading.Thread(target=run_api).start()
-    threading.Thread(target=watch_payments).start()
+    agent=JBitsAgent()
+    agent.run_full_execution()
+    threading.Thread(target=watch_payments,args=(agent,),daemon=True).start()
+    while True: time.sleep(60)  # Keep agent running
